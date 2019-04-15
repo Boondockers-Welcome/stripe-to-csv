@@ -1,6 +1,6 @@
 import argparse
 
-from stripe_xero_csv import get_transactions, write_csv_file
+from stripe_to_csv import get_transactions, write_csv_file
 
 
 if __name__ == "__main__":
