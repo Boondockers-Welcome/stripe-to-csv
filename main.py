@@ -1,6 +1,5 @@
 import argparse
-
-from stripe_to_csv import get_transactions, write_csv_file
+import stripe_to_csv
 
 
 if __name__ == "__main__":
@@ -44,16 +43,33 @@ if __name__ == "__main__":
     # parse arguments
     args = parser.parse_args()
 
+    stripe_to_csv.set_stripe_api_key(args.api_key)
+    start, end = stripe_to_csv.get_dates(args.start, args.end)
+
     # retrieve Stripe transactions
-    transactions = get_transactions(
-        stripe_api_key=args.api_key,
+    transactions = stripe_to_csv.get_transactions(
         currency=args.currency,
-        start=args.start,
-        end=args.end
+        start=start,
+        end=end,
+    )
+
+    charges = stripe_to_csv.get_charges(
+        start=start,
+        end=end,
+    )
+
+    refunds = stripe_to_csv.get_refunds(
+        start=start,
+        end=end,
     )
 
     # write to .csv file
-    write_csv_file(
+    stripe_to_csv.write_csv_file(
         file=args.output,
-        transactions=transactions
+        start=start,
+        end=end,
+        currency=args.currency,
+        transactions=transactions,
+        charges=charges,
+        refunds=refunds
     )

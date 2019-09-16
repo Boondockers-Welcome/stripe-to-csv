@@ -1,19 +1,14 @@
 from datetime import date, datetime
 import os
 import csv
-from collections import namedtuple
 from decimal import Decimal
 
 import dateparser
 import stripe
-
-Transactions = namedtuple('stripe_transactions', 'start end currency results')
 TWO_PLACES = Decimal('0.01')
 
 
-def get_transactions(stripe_api_key=None, currency='USD', start=None, end=None):
-    """Get a list of Stripe transactions"""
-
+def get_dates(start=None, end=None):
     # set the time to 0:00
     min_time = {'hour': 0,
                 'minute': 0,
@@ -28,34 +23,62 @@ def get_transactions(stripe_api_key=None, currency='USD', start=None, end=None):
     start = dateparser.parse(start) if start else start_of_month
     end = dateparser.parse(end) if end else now
 
+    return start, end
+
+
+def set_stripe_api_key(stripe_api_key=None):
     # attach Stripe API key
     stripe.api_key = stripe_api_key
+
+
+def get_transactions(currency='USD', start=None, end=None):
+    """Get a list of Stripe transactions"""
 
     # call Stripe, and get transactions
     results = stripe.BalanceTransaction.list(
         currency=currency,
         created={
             'gte': int(start.timestamp()),
-            'lte': int(end.timestamp()),
+            'lt': int(end.timestamp()),
         }
     )
 
     # return start, end and results
-    return Transactions(
-        start=start,
-        end=end,
-        currency=currency,
-        results=results
+    return results
+
+
+def get_charges(start=None, end=None):
+    # call Stripe, and get transactions
+    results = stripe.Charge.list(
+        created={
+            'gte': int(start.timestamp()),
+            'lt': int(end.timestamp()),
+        }
     )
+    return results
 
 
-def write_csv_file(file=None, transactions: Transactions=None):
+def get_refunds(start=None, end=None):
+    # call Stripe, and get transactions
+    results = stripe.Event.list(
+        created={
+            'gte': int(start.timestamp()),
+            'lt': int(end.timestamp()),
+        },
+        type='charge.refunded'
+    )
+    return results
+
+
+def write_csv_file(file, start, end, currency, transactions=None, charges=None, refunds=None):
     """Write results file to .csv"""
 
     # set default file name
-    start_formatted = transactions.start.strftime('%Y_%m_%d')
-    end_formatted = transactions.end.strftime('%Y_%m_%d')
-    file = file or f"output/{transactions.currency}-{start_formatted}-{end_formatted}.csv"
+    start_formatted = start.strftime('%Y_%m_%d')
+    end_formatted = end.strftime('%Y_%m_%d')
+    file = file or "output/{}-{}-{}.csv".format(
+        currency, start_formatted, end_formatted
+    )
 
     # create dir if it doesn't already exist
     dirname = os.path.dirname(file)
@@ -65,22 +88,11 @@ def write_csv_file(file=None, transactions: Transactions=None):
     # open the file as writable
     with open(file, 'w', newline='') as csvfile:
 
-        # create CSV writer, with column names
-        writer = csv.DictWriter(
-            csvfile,
-            fieldnames=[
-                '*Date',
-                '*Amount',
-                'Description',
-                'Reference',
-            ]
-        )
-
-        # write first row
-        writer.writeheader()
-
+        rows = {}
         # cycle through transactions
-        for transaction in transactions.results.auto_paging_iter():
+        for transaction in transactions.auto_paging_iter():
+            if transaction['type'] == 'payout_failure':
+                continue
 
             # Xero format for dates
             created = date.fromtimestamp(transaction['created']).strftime('%d/%m/%y')
@@ -88,26 +100,61 @@ def write_csv_file(file=None, transactions: Transactions=None):
             # transaction amount
             transaction_amount = Decimal(transaction['amount'] / 100).quantize(TWO_PLACES)
 
-            # write row
-            writer.writerow({
+            reference = transaction['source'] if transaction['source'] else transaction['id']
+            rows[reference] = {
                 '*Date': created,
                 '*Amount': transaction_amount,
+                'Payee': '',
                 'Description': transaction['description'],
-                'Reference': transaction['id'],
-            })
+                'Reference': reference,
+                'Timestamp': datetime.fromtimestamp(transaction['created']).isoformat(),
+            }
 
             # cycle through fees and create separate rows
+            fee_count = 0
             for fee in transaction.fee_details:
-
+                fee_count += 1
                 # fee amount
                 fee_amount = -Decimal(fee['amount'] / 100).quantize(TWO_PLACES)
 
-                writer.writerow({
+                reference = transaction['id'] + '-fee-' + str(fee_count)
+                rows[reference] = {
                     '*Date': created,  # same date
                     '*Amount': fee_amount,
+                    'Payee': '',
                     'Description': fee['description'],
-                    'Reference': transaction['id'],  # same id
-                })
+                    'Reference': transaction['id'],
+                    'Timestamp': datetime.fromtimestamp(transaction['created']).isoformat(),
+                }
 
-    # done!
-    print(f"written to {file}")
+        for charge in charges.auto_paging_iter():
+            idnum = charge['id']
+            if idnum in rows:
+                rows[idnum]['Payee'] = charge['source']['name']
+
+        for refund in refunds.auto_paging_iter():
+            idnum = refund['data']['object']['refunds']['data'][0]['id']
+            if idnum in rows:
+                rows[idnum]['Payee'] = refund['data']['object']['source']['name']
+
+        # create CSV writer, with column names
+        writer = csv.DictWriter(
+            csvfile,
+            fieldnames=[
+                '*Date',
+                '*Amount',
+                'Payee',
+                'Description',
+                'Reference',
+                'Timestamp',
+            ]
+        )
+
+        # write header
+        writer.writeheader()
+
+        # and finally, write all the rows
+        writer.writerows(rows.values())
+
+    #  done!
+    print("written to {}".format(file))
