@@ -85,6 +85,13 @@ def write_csv_file(file, start, end, currency, transactions=None, charges=None, 
     if dirname and not os.path.exists(dirname):
         os.makedirs(dirname)
 
+    try:
+        open(file, 'r')
+        print("File %s already exists!", file)
+        raise FileExistsError
+    except FileNotFoundError:
+        pass
+
     # open the file as writable
     with open(file, 'w', newline='') as csvfile:
 
@@ -130,7 +137,8 @@ def write_csv_file(file, start, end, currency, transactions=None, charges=None, 
         for charge in charges.auto_paging_iter():
             idnum = charge['id']
             if idnum in rows:
-                rows[idnum]['Payee'] = charge['source']['name']
+                if 'name' in charge['source']:
+                    rows[idnum]['Payee'] = charge['source']['name']
 
         for refund in refunds.auto_paging_iter():
             idnum = refund['data']['object']['refunds']['data'][0]['id']
